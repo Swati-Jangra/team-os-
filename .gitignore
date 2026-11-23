@@ -1,0 +1,13 @@
+node_modules
+*.tsbuildinfo
+dist
+.next
+.turbo
+coverage
+.env
+.env.local
+*.log
+.pgdata
+dump.rdb
+e2e/out
+e2e/.run

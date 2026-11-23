@@ -1,0 +1,27 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`route authorization inventory (fails when a new route is added without a conscious decision) > every authenticated org-scoped route declares a required permission or is explicitly member-level 1`] = `
+[
+  "GET /organizations/:orgId/notifications",
+  "GET /organizations/:orgId/notifications/unread-count",
+  "GET /organizations/:orgId/stream",
+  "POST /organizations/:orgId/notifications/:id/read",
+  "POST /organizations/:orgId/notifications/read-all",
+]
+`;
+
+exports[`route authorization inventory (fails when a new route is added without a conscious decision) > routes outside an organization are either public or user-scoped (never silently open) 1`] = `
+[
+  "DELETE /auth/sessions/:id",
+  "GET /auth/me",
+  "GET /auth/sessions",
+  "GET /integrations/github/callback",
+  "GET /integrations/google/callback",
+  "GET /me/notification-preferences",
+  "GET /organizations",
+  "POST /auth/logout",
+  "POST /invitations/accept",
+  "POST /organizations",
+  "PUT /me/notification-preferences",
+]
+`;

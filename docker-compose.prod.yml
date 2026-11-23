@@ -1,0 +1,127 @@
+# Single-host production topology. For anything bigger, run Postgres and Redis as managed services,
+# delete the `postgres`/`redis` services below and point DATABASE_URL / DIRECT_URL / REDIS_URL at them.
+#
+#   cp .env.production.example .env.production   # fill in real values; never commit it
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# The API refuses to boot in production with unsafe settings (see packages/config productionProblems).
+name: teamos
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgresql://app_user:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-teamos}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+  AUTH_SECRET: ${AUTH_SECRET}
+  APP_URL: https://${DOMAIN}
+  API_URL: https://${DOMAIN}
+  SMTP_HOST: ${SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_SECURE: ${SMTP_SECURE:-}
+  MAIL_FROM: ${MAIL_FROM}
+  AI_PROVIDER: ${AI_PROVIDER:-openai}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  INTEGRATION_ENCRYPTION_KEY: ${INTEGRATION_ENCRYPTION_KEY:-}
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  METRICS_TOKEN: ${METRICS_TOKEN:-}
+  STORAGE_DIR: /data/storage
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-teamos}
+      MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infrastructure/prod/init-roles.sh:/docker-entrypoint-initdb.d/00-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${POSTGRES_DB:-teamos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [internal]
+
+  migrate:
+    build: { context: ., target: migrate }
+    restart: "no"
+    environment:
+      DIRECT_URL: postgresql://migrator:${MIGRATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-teamos}
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+  api:
+    build: { context: ., target: api }
+    restart: unless-stopped
+    environment: *app-env
+    volumes: [storage:/data/storage]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    networks: [internal]
+
+  worker:
+    build: { context: ., target: worker }
+    restart: unless-stopped
+    environment: *app-env
+    volumes: [storage:/data/storage]   # must be the SAME volume as the api (meeting audio)
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    networks: [internal]
+
+  web:
+    build:
+      context: .
+      target: web
+      args: { API_INTERNAL_URL: "http://api:4000" }
+    restart: unless-stopped
+    depends_on: [api]
+    networks: [internal]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./infrastructure/prod/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, web]
+    networks: [internal, public]
+
+networks:
+  internal: {}
+  public: {}
+
+volumes:
+  pgdata:
+  redisdata:
+  storage:
+  caddy_data:
+  caddy_config:

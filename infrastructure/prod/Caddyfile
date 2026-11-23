@@ -1,0 +1,33 @@
+# TLS terminates here (automatic Let's Encrypt for a public DOMAIN). The API is only reachable under /api/;
+# /metrics and the worker's port are never routed from the internet.
+{$DOMAIN} {
+	encode zstd gzip
+
+	request_body {
+		max_size 30MB   # meeting audio uploads (API enforces 25 MB)
+	}
+
+	# live updates (Server-Sent Events): do not buffer
+	@sse path_regexp sse ^/api/v1/organizations/[^/]+/stream$
+	handle @sse {
+		reverse_proxy api:4000 {
+			flush_interval -1
+			transport http {
+				response_header_timeout 0
+			}
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy api:4000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

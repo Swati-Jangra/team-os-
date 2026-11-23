@@ -1,0 +1,96 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: teamos }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      TEST_ADMIN_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Dependency audit (production deps)
+        run: pnpm audit --prod --audit-level=high
+
+  images:
+    # builds every runtime image; this is the first place the Dockerfile is actually exercised
+    runs-on: ubuntu-latest
+    needs: verify
+    strategy:
+      matrix:
+        target: [api, worker, migrate, web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  e2e:
+    # Browser end-to-end suite (e2e/README.md): real web + API + worker + Postgres + Redis, mocked GitHub/Google/SMTP.
+    # NOTE: written without being able to run GitHub Actions; the same commands pass locally (see docs/PROJECT_STATUS.md).
+    runs-on: ubuntu-latest
+    needs: verify
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: teamos }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      DATABASE_URL: postgresql://app_user:app_password@localhost:5432/teamos
+      DIRECT_URL: postgresql://migrator:migrator_password@localhost:5432/teamos
+      E2E_DATABASE_URL: postgresql://migrator:migrator_password@localhost:5432/teamos
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: PGPASSWORD=postgres psql -h localhost -U postgres -d teamos -f infrastructure/docker/postgres-init.sql
+      - run: ALLOW_HTTP=1 pnpm build
+      - run: pnpm db:migrate
+      - run: npx playwright install --with-deps chromium
+      - run: npm install --no-save playwright@1.49
+      - run: ./e2e/stack.sh start
+      - run: ./e2e/run.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: |
+            e2e/out
+            e2e/.run
+      - if: always()
+        run: ./e2e/stack.sh stop
